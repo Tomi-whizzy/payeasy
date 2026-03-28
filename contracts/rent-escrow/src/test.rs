@@ -147,3 +147,44 @@ fn test_add_roommate_by_non_landlord_fails() {
         "expected add_roommate to fail for a non-landlord caller"
     );
 }
+
+/// Issue #32 – release: underfunded guard (acceptance criteria)
+///
+/// `release` must revert with `Error::InsufficientFunding` when total
+/// contributions have not yet reached the rent target, preventing any
+/// premature payout to the landlord.
+#[test]
+fn test_release_while_underfunded_fails() {
+    let env = Env::default();
+    let (client, _, roommate_a, _) = setup_escrow(&env);
+
+    // Only roommate_a pays a partial amount — total funded = 300, target = 1000.
+    client.contribute(&roommate_a, &300_i128);
+
+    assert_eq!(client.is_fully_funded(), false);
+
+    let result = client.try_release();
+    assert!(
+        result.is_err(),
+        "expected release to fail when escrow is underfunded"
+    );
+}
+
+/// Issue #32 – release: succeeds when fully funded
+///
+/// Once every roommate has covered the full rent amount, `release` must
+/// complete without error.
+#[test]
+fn test_release_when_fully_funded_succeeds() {
+    let env = Env::default();
+    let (client, _, roommate_a, roommate_b) = setup_escrow(&env);
+
+    // Both roommates pay their full shares — total = 1000, target = 1000.
+    client.contribute(&roommate_a, &500_i128);
+    client.contribute(&roommate_b, &500_i128);
+
+    assert_eq!(client.is_fully_funded(), true);
+
+    // release must not return an error.
+    client.release();
+}

@@ -171,19 +171,17 @@ impl RentEscrowContract {
     }
 
     /// Release total rent to the landlord if fully funded.
+    ///
+    /// Guard: delegates to `is_fully_funded` at the start of the function.
+    /// Any call made before all roommates have met the rent target is
+    /// rejected with `Error::InsufficientFunding`, preventing premature payout.
     pub fn release(env: Env) -> Result<(), Error> {
-        let total_contributed = Self::get_total_funded(env.clone());
-
-        let escrow: RentEscrow = env.storage()
-            .persistent()
-            .get(&DataKey::Escrow)
-            .expect("escrow not initialized");
-
-        if total_contributed < escrow.rent_amount {
+        // Guard: must be fully funded before any payout can occur.
+        if !Self::is_fully_funded(env.clone()) {
             return Err(Error::InsufficientFunding);
         }
 
-        // TODO: Transfer total_contributed tokens to escrow.landlord
+        // TODO: Transfer collected rent tokens to escrow.landlord
 
         Ok(())
     }
