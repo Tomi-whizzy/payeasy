@@ -65,7 +65,11 @@ fn test_initialize() {
     roommate_shares.set(Address::generate(&env), 500);
 
     env.mock_all_auths();
+<<<<<<< HEAD
     client.initialize(&landlord, &token_address, &1000_i128, &TEST_DEADLINE, &roommate_shares);
+=======
+    client.initialize(&landlord, &1000_i128, &TEST_DEADLINE, &roommate_shares);
+>>>>>>> fa7afe3 (feat: add get_total function and fix CI workflow paths)
 
     env.as_contract(&contract_id, || {
         let escrow: RentEscrow = env
@@ -324,6 +328,7 @@ fn test_release_while_underfunded_fails() {
     );
 }
 
+<<<<<<< HEAD
 #[test]
 fn test_release_transfers_tokens_to_landlord() {
     let env = Env::default();
@@ -341,3 +346,24 @@ fn test_release_transfers_tokens_to_landlord() {
 
     assert_eq!(landlord_balance_after - landlord_balance_before, 1000_i128);
 }
+=======
+/// Issue #32 – release: succeeds when fully funded
+///
+/// Once every roommate
+
+#[test]
+fn test_get_total_returns_rent_amount() {
+    let env = Env::default();
+    let (client, _, _, _) = setup_escrow(&env);
+    assert_eq!(client.get_total(), 1000_i128);
+}
+
+#[test]
+fn test_get_total_no_mutation() {
+    let env = Env::default();
+    let (client, _, roommate_a, _) = setup_escrow(&env);
+    client.contribute(&roommate_a, &500_i128);
+    assert_eq!(client.get_total(), 1000_i128);
+    assert_eq!(client.get_total(), 1000_i128);
+}
+>>>>>>> fa7afe3 (feat: add get_total function and fix CI workflow paths)
