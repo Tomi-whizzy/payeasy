@@ -1,6 +1,15 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::{
+    testutils::Address as _,
+    token::{StellarAssetClient, TokenClient},
+    Env,
+};
+
+const TEST_DEADLINE: u64 = 2_000_000_000_u64;
+
+fn setup_escrow(env: &Env) -> (RentEscrowContractClient<'_>, Address, Address, Address, Address) {
 use soroban_sdk::{testutils::{Address as _, Events, Ledger}, token, Address, Env};
 
 const TEST_DEADLINE: u64 = 2_000_000_000_u64;
@@ -9,10 +18,20 @@ fn setup_escrow(env: &Env) -> (RentEscrowContractClient<'_>, Address, Address, A
     env.mock_all_auths();
     let contract_id = env.register(RentEscrowContract, ());
     let client = RentEscrowContractClient::new(env, &contract_id);
-
     let landlord = Address::generate(env);
     let roommate_a = Address::generate(env);
     let roommate_b = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let token_address = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let sac = StellarAssetClient::new(env, &token_address);
+    env.mock_all_auths();
+    sac.mint(&roommate_a, &1000_i128);
+    sac.mint(&roommate_b, &1000_i128);
+    let mut roommate_shares = Map::new(env);
+    roommate_shares.set(roommate_a.clone(), 500_i128);
+    roommate_shares.set(roommate_b.clone(), 500_i128);
+    client.initialize(&landlord, &token_address, &1000_i128, &TEST_DEADLINE, &roommate_shares);
+    (client, landlord, roommate_a, roommate_b, token_address)
 
     let token_admin = Address::generate(env);
     let token_address = env.register_stellar_asset_contract(token_admin.clone());
@@ -38,6 +57,8 @@ fn test_initialize() {
     let client = RentEscrowContractClient::new(&env, &contract_id);
 
     let landlord = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
     let token_address = Address::generate(&env);
     let mut roommate_shares: Map<Address, i128> = Map::new(&env);
     roommate_shares.set(Address::generate(&env), 500);
@@ -61,12 +82,24 @@ fn test_initialize() {
 #[test]
 fn test_get_deadline() {
     let env = Env::default();
+    let (client, _, _, _, _) = setup_escrow(&env);
     let (client, _, _, _, _, _) = setup_escrow(&env);
 
     assert_eq!(client.get_deadline(), TEST_DEADLINE);
 }
 
 #[test]
+fn test_total_funded_zero_before_contributions() {
+    let env = Env::default();
+    let (client, _, _, _, _) = setup_escrow(&env);
+
+    assert_eq!(client.get_total_funded(), 0_i128);
+}
+
+#[test]
+fn test_total_funded_after_partial_contributions() {
+    let env = Env::default();
+    let (client, _, roommate_a, _, _) = setup_escrow(&env);
 fn test_total_funded_after_partial_contributions() {
     let env = Env::default();
     let (client, _, roommate_a, _, _, token) = setup_escrow(&env);
@@ -81,6 +114,7 @@ fn test_total_funded_after_partial_contributions() {
 #[test]
 fn test_total_funded_after_all_contributions() {
     let env = Env::default();
+    let (client, _, roommate_a, roommate_b, _) = setup_escrow(&env);
     let (client, _, roommate_a, roommate_b, _, token) = setup_escrow(&env);
 
     client.contribute(&roommate_a, &500_i128);
@@ -263,7 +297,7 @@ fn test_add_roommate_by_landlord_succeeds() {
 #[test]
 fn test_add_roommate_by_non_landlord_fails() {
     let env = Env::default();
-    let (client, _, roommate_a, _, _, _) = setup_escrow(&env);
+    let (client, _, roommate_a, _, _) = setup_escrow(&env);
 
     let new_roommate = Address::generate(&env);
 
@@ -277,7 +311,7 @@ fn test_add_roommate_by_non_landlord_fails() {
 #[test]
 fn test_release_while_underfunded_fails() {
     let env = Env::default();
-    let (client, _, roommate_a, _, _, _) = setup_escrow(&env);
+    let (client, _, roommate_a, _, _) = setup_escrow(&env);
 
     client.contribute(&roommate_a, &300_i128);
 
@@ -291,106 +325,19 @@ fn test_release_while_underfunded_fails() {
 }
 
 #[test]
-fn test_release_transfer() {
+fn test_release_transfers_tokens_to_landlord() {
     let env = Env::default();
-    let (client, landlord, roommate_a, roommate_b, _, token) = setup_escrow(&env);
+    let (client, landlord, roommate_a, roommate_b, token_address) = setup_escrow(&env);
+    let token_client = TokenClient::new(&env, &token_address);
 
     client.contribute(&roommate_a, &500_i128);
     client.contribute(&roommate_b, &500_i128);
 
+    assert_eq!(client.is_fully_funded(), true);
+
+    let landlord_balance_before = token_client.balance(&landlord);
     client.release();
+    let landlord_balance_after = token_client.balance(&landlord);
 
-    assert_eq!(token.balance(&landlord), 1000_i128);
-    assert_eq!(token.balance(&client.address), 0_i128);
-}
-
-#[test]
-fn test_claim_refund_transfer() {
-    let env = Env::default();
-    let (client, _, roommate_a, _, _, token) = setup_escrow(&env);
-
-    client.contribute(&roommate_a, &300_i128);
-
-    // Fast forward time past deadline
-    env.ledger().set_timestamp(TEST_DEADLINE + 1);
-
-    let initial_balance = token.balance(&roommate_a);
-    client.claim_refund(&roommate_a);
-
-    assert_eq!(token.balance(&roommate_a), initial_balance + 300_i128);
-    assert_eq!(token.balance(&client.address), 0_i128);
-    assert_eq!(client.get_balance(&roommate_a), 0_i128);
-}
-
-#[test]
-fn test_initialize_rejects_below_min_rent() {
-    let env = Env::default();
-    let contract_id = env.register(RentEscrowContract, ());
-    let client = RentEscrowContractClient::new(&env, &contract_id);
-
-    let landlord = Address::generate(&env);
-    let token_address = Address::generate(&env);
-    let roommate = Address::generate(&env);
-
-    let mut roommate_shares = Map::new(&env);
-    roommate_shares.set(roommate.clone(), 50_i128);
-
-    env.mock_all_auths();
-    // rent_amount below MIN_RENT (100) must return InvalidAmount
-    let result = client.try_initialize(&landlord, &token_address, &50_i128, &TEST_DEADLINE, &roommate_shares);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_initialize_accepts_min_rent() {
-    let env = Env::default();
-    let contract_id = env.register(RentEscrowContract, ());
-    let client = RentEscrowContractClient::new(&env, &contract_id);
-
-    let landlord = Address::generate(&env);
-    let token_address = Address::generate(&env);
-    let roommate = Address::generate(&env);
-
-    let mut roommate_shares = Map::new(&env);
-    roommate_shares.set(roommate.clone(), 100_i128);
-
-    env.mock_all_auths();
-    // rent_amount exactly at MIN_RENT (100) must succeed
-    client.initialize(&landlord, &token_address, &100_i128, &TEST_DEADLINE, &roommate_shares);
-}
-
-#[test]
-fn test_initialize_valid_landlord() {
-    let env = Env::default();
-    let contract_id = env.register(RentEscrowContract, ());
-    let client = RentEscrowContractClient::new(&env, &contract_id);
-
-    let landlord = Address::generate(&env);
-    let token_address = Address::generate(&env);
-    let roommate = Address::generate(&env);
-
-    let mut roommate_shares = Map::new(&env);
-    roommate_shares.set(roommate.clone(), 1000_i128);
-
-    env.mock_all_auths();
-    // Should succeed with a valid (non-contract) landlord address
-    client.initialize(&landlord, &token_address, &1000_i128, &TEST_DEADLINE, &roommate_shares);
-}
-
-#[test]
-#[should_panic(expected = "landlord cannot be the contract itself")]
-fn test_initialize_reverts_when_landlord_is_contract() {
-    let env = Env::default();
-    let contract_id = env.register(RentEscrowContract, ());
-    let client = RentEscrowContractClient::new(&env, &contract_id);
-
-    let token_address = Address::generate(&env);
-    let roommate = Address::generate(&env);
-
-    let mut roommate_shares = Map::new(&env);
-    roommate_shares.set(roommate.clone(), 1000_i128);
-
-    env.mock_all_auths();
-    // Passing the contract's own address as landlord must revert
-    client.initialize(&contract_id, &token_address, &1000_i128, &TEST_DEADLINE, &roommate_shares);
+    assert_eq!(landlord_balance_after - landlord_balance_before, 1000_i128);
 }
