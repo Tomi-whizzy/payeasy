@@ -21,9 +21,8 @@ pub enum Error {
     DeadlineNotReached = 4,
     /// The sum of all roommate shares exceeds the total rent amount.
     ShareSumExceedsRent = 5,
-    /// Roommate has no contributed balance to refund.
     /// No funds to refund for this roommate.
-    NothingToRefund = 5,
+    NothingToRefund = 6,
 }
 
 /// Storage key definitions for persistent contract state.
@@ -390,6 +389,15 @@ impl RentEscrowContract {
         let token_client = token::Client::new(&env, &escrow.token_address);
         token_client.transfer(&env.current_contract_address(), &from, &refund_amount);
 
+        Ok(())
+    }
+
+    /// Upgrades the contract's WASM code. Only the landlord can call this.
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), Error> {
+        let landlord: Address = Self::get_landlord(env.clone());
+        landlord.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
 }
