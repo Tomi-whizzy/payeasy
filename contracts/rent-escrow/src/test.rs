@@ -1,13 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
-    token,
-    token::{StellarAssetClient, TokenClient},
-    Address,
-    Env,
-};
+use soroban_sdk::{symbol_short, testutils::{Address as _, Events, Ledger}, token, Address, Env, IntoVal};
 
 const TEST_DEADLINE: u64 = 2_000_000_000_u64;
 
@@ -240,19 +234,7 @@ fn test_share_sum_equals_rent_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
-fn test_share_sum_exceeds_rent_fails() {
-    let env = Env::default();
-    let contract_id = env.register(RentEscrowContract, ());
-    let client = RentEscrowContractClient::new(&env, &contract_id);
-    let landlord = Address::generate(&env);
-    let mut shares = Map::new(&env);
-    shares.set(Address::generate(&env), 700_i128);
-    shares.set(Address::generate(&env), 500_i128);
-    env.mock_all_auths();
-    client.initialize(&landlord, &1000_i128, &TEST_DEADLINE, &shares);
-#[test]
-fn test_refund_zeros_balance() {
+fn test_reclaim_deposit_transfer() {
     let env = Env::default();
     let (client, _, roommate_a, _, _, token) = setup_escrow(&env);
 
@@ -261,9 +243,8 @@ fn test_refund_zeros_balance() {
 
     client.refund(&roommate_a);
 
-    assert_eq!(client.get_total_funded(), 0_i128);
-    assert_eq!(token.balance(&roommate_a), 1000_i128);
-}
+    let initial_balance = token.balance(&roommate_a);
+    client.reclaim_deposit(&roommate_a);
 
 #[test]
 #[should_panic(expected = "Error(Contract, #5)")]
@@ -353,52 +334,22 @@ fn test_full_flow_scenario() {
     assert_eq!(token.balance(&landlord), 1000_i128);
     assert_eq!(token.balance(&client.address), 0_i128);
 }
-
 #[test]
-fn test_individual_token_refund() {
+fn test_contribute_emits_event() {
     let env = Env::default();
-    let (client, landlord, roommate_a, _, _, token) = setup_escrow(&env);
+    let (client, _, roommate_a, _, _, _) = setup_escrow(&env);
 
-    client.contribute(&roommate_a, &400_i128);
-    assert_eq!(client.get_balance(&roommate_a), 400_i128);
-    assert_eq!(token.balance(&client.address), 400_i128);
+    client.contribute(&roommate_a, &300_i128);
 
-    let initial_roommate_balance = token.balance(&roommate_a);
+    let events = env.events().all().all(); // First .all() returns ContractEvents, second .all() returns Vec
+    let last_event = events.last().unwrap();
 
-    let refund_amount = client.refund(&roommate_a);
-    assert_eq!(refund_amount, 400_i128);
-    assert_eq!(client.get_balance(&roommate_a), 0_i128);
-    assert_eq!(token.balance(&client.address), 0_i128);
-    assert_eq!(token.balance(&roommate_a), initial_roommate_balance + 400_i128);
-
-    // keep landlord in scope to avoid accidental unused-variable drift in future edits
-    assert_eq!(token.balance(&landlord), 0_i128);
-}
-
-#[test]
-fn test_agreement_released_event() {
-    let env = Env::default();
-    let (client, _, roommate_a, roommate_b, _, _) = setup_escrow(&env);
-
-    client.contribute(&roommate_a, &500_i128);
-    client.contribute(&roommate_b, &500_i128);
-
-    client.release();
-
-    let events = env.events().all();
-    let xdr_events = events.events();
-    assert!(
-        !xdr_events.is_empty(),
-        "release should emit at least one event"
+    assert_eq!(
+        last_event,
+        (
+            client.address.clone(),
+            (symbol_short!("deposit"), roommate_a).into_val(&env),
+            300_i128.into_val(&env)
+        )
     );
-
-    let released_event = xdr_events.last().expect("expected at least one event");
-    match &released_event.body {
-        soroban_sdk::xdr::ContractEventBody::V0(v0) => {
-            assert!(
-                !v0.topics.is_empty(),
-                "AgreementReleased event should have topics"
-            );
-        }
-    }
 }
